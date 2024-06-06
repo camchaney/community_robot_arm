@@ -38,6 +38,10 @@
   #include "byj_gripper.h"
 #endif
 
+// DECLARE FUNCTIONS
+String commandFormatter(float y, float z, float f = 0);
+void emulateSerialCommand(float y, float z, float f = 0);
+
 //DETERMINE PINOUTS & CONFIG TO USE SUBJECT TO BOARD_CHOICE
 #if BOARD_CHOICE == UNO
   #include "pinout/pinout_uno.h"
@@ -89,6 +93,14 @@ RobotGeometry geometry(END_EFFECTOR_OFFSET, LOW_SHANK_LENGTH, HIGH_SHANK_LENGTH)
 Interpolation interpolator;
 Queue<Cmd> queue(QUEUE_SIZE);
 Command command;
+
+// TESTING
+bool speed_test = false;
+bool go_home = true;
+const int speed_loops = 5;
+int loopIteration = 0;
+float speeds[speed_loops] = {480,490,500,510,520};
+String speedCommand;
 
 //PS4 CONTROLLER OBJECT FOR ESP32
 #if BOARD_CHOICE == WEMOSD1R32 && ESP32_JOYSTICK == DUALSHOCK4
@@ -153,31 +165,41 @@ void loop() {
   #endif
   fan.update();
 
+  // Handle serial input commands
   if (!queue.isFull()) {
     if (command.handleGcode()) {
       queue.push(command.getCmd());
     }
   }
+  // Once position has been reached...
   if ((!queue.isEmpty()) && interpolator.isFinished()) {
     executeCommand(queue.pop());
+    if (speed_test) {
+      if (go_home) {
+        // First go back to initial position
+        emulateSerialCommand(INITIAL_Y,INITIAL_Z);
+        go_home = false;
+      } else {
+        // Then do next loopIteration iteration
+        loopIteration++;
+        speed_test = true;
+        go_home = true;
+      }
+    }
     if (PRINT_REPLY) {
       Serial.println(PRINT_REPLY_MSG);
     }
   }
 
-  if (millis() % 500 < 250) {
-    led.cmdOn();
+  // Do speed test
+  if (speed_test) {
+    if (loopIteration < speed_loops){
+      // speedCommand = "G0Y280Z0F"+speeds[loopIteration]+"\r";
+      emulateSerialCommand(280,0,speeds[loopIteration]);
+    } else {
+      speed_test = false;
+    }
   }
-  else {
-    led.cmdOff();
-  }
-
-  #if BOARD_CHOICE == WEMOSD1R32 && ESP32_JOYSTICK == DUALSHOCK4
-    ps4_controller_loop();
-  #endif
-  #if BOARD_CHOICE == WEMOSD1R32 && ESP32_JOYSTICK == WIIMOTE
-    wiimote_controller_loop();
-  #endif
 }
 
 void executeCommand(Cmd cmd) {
@@ -191,6 +213,7 @@ void executeCommand(Cmd cmd) {
     switch (cmd.num) {
     case 0:
     case 1:
+      Serial.println("G1 command now.");
       fan.enable(true);
       Point posoffset;
       posoffset = interpolator.getPosOffset();      
@@ -213,6 +236,11 @@ void executeCommand(Cmd cmd) {
       interpolator.resetPosOffset();
       cmdMove(cmd, interpolator.getPosmm(), interpolator.getPosOffset(), false);
       interpolator.setPosOffset(cmd.valueX, cmd.valueY, cmd.valueZ, cmd.valueE);
+      break;
+    case 69:
+      loopIteration = 0;
+      speed_test = true;
+      go_home = true;
       break;
     default: printErr();
     }
@@ -332,110 +360,17 @@ void homeSequence_UNO(){
   Logger::logINFO("HOMING COMPLETE");
 }
 
-#if BOARD_CHOICE == WEMOSD1R32 && ESP32_JOYSTICK == DUALSHOCK4
-void ps4_controller_loop(){
-  controller_ps4.update();
-  interpolator.speed_profile = 0;
-  if (controller_ps4.buttons[PS4_CROSS]){if (GRIPPER == SERVO){servo_gripper.cmdOn();}}
-  if (controller_ps4.buttons[PS4_CIRCLE]){if (GRIPPER == SERVO){servo_gripper.cmdOff();}}
-  if (controller_ps4.buttons[PS4_OPTIONS]){setStepperEnable(true);}
-  if (controller_ps4.buttons[PS4_SHARE]){setStepperEnable(false);}
-  if (controller_ps4.buttons[PS4_TOUCHPAD]){homeSequence_UNO();}
-  float x_distance = 0.0;
-  float y_distance = 0.0;
-  float z_distance = 0.0;
-  float e_distance = 0.0;
-  if (abs(controller_ps4.buttons[PS4_RSTICKY]) > 10){
-//    z_distance = float(controller_ps4.buttons[PS4_RSTICKY]) / 2500.0;
-    z_distance = float(controller_ps4.buttons[PS4_RSTICKY])*JOYSTICK_SPEED_MULTIPLIER / 2500.0;
-  }
-  if (abs(controller_ps4.buttons[PS4_LSTICKX]) > 10){
-    float turn_rad = float(controller_ps4.buttons[PS4_LSTICKX])*JOYSTICK_SPEED_MULTIPLIER / 300000.0;
-    x_distance += sin(geometry.getRotRad() + turn_rad) * geometry.getHypot() - interpolator.getXPosmm();
-    y_distance += cos(geometry.getRotRad() + turn_rad) * geometry.getHypot() - interpolator.getYPosmm();
-  }
-  if (abs(controller_ps4.buttons[PS4_LSTICKY]) > 10){
-    float hp_distance = float(controller_ps4.buttons[PS4_LSTICKY])*JOYSTICK_SPEED_MULTIPLIER / 2500.0;
-    float hp_ratio = hp_distance / geometry.getHypot();
-    x_distance += interpolator.getXPosmm() * hp_ratio;
-    y_distance += interpolator.getYPosmm() * hp_ratio;
-  }
-  if (abs(controller_ps4.buttons[PS4_L2VALUE]) > 10){
-    e_distance -= float(controller_ps4.buttons[PS4_L2VALUE])*JOYSTICK_SPEED_MULTIPLIER/ 10000.0;
-  }
-  if (abs(controller_ps4.buttons[PS4_R2VALUE]) > 10){
-    e_distance += float(controller_ps4.buttons[PS4_R2VALUE])*JOYSTICK_SPEED_MULTIPLIER/ 10000.0;
-  }
-  if (x_distance || y_distance || z_distance || e_distance){
-    interpolator.speed_profile = 0;
-    interpolator.setInterpolation(interpolator.getXPosmm()+x_distance, interpolator.getYPosmm()+y_distance, interpolator.getZPosmm()+z_distance, interpolator.getEPosmm()+e_distance, 5);
-  }
+String commandFormatter(float y, float z, float f = 0) {
+  String formattedCommand;
+  formattedCommand = "G0Y" + String(y, 2) + "Z" + String(z, 2) + "F" + String(f, 2) + "\r";
+  return formattedCommand;
 }
-#endif
 
-#if BOARD_CHOICE == WEMOSD1R32 && ESP32_JOYSTICK == WIIMOTE
-void wiimote_controller_loop(){
-  controller_wiimote.update();
-  interpolator.speed_profile = 0;
-  if (controller_wiimote.button == WII_A && GRIPPER == SERVO){
-    if (!servo_gripper.isOn()){
-      servo_gripper.cmdOn();
-    } else {
-      servo_gripper.cmdOff();
-    }
-  }
-  if (controller_wiimote.button == WII_PLUS){setStepperEnable(true);}
-  if (controller_wiimote.button == WII_MINUS){setStepperEnable(false);}
-  if (controller_wiimote.button == WII_HOME){homeSequence_UNO();}
-  
-  float x_distance = 0.0;
-  float y_distance = 0.0;
-  float z_distance = 0.0;
-  float e_distance = 0.0;
-  float hp_distance = 0.0;
-  float turn_rad = 0.0;
-
-  if (controller_wiimote.button == WII_LEFT || controller_wiimote.button == WII_LEFT+WII_DOWN || controller_wiimote.button == WII_LEFT+WII_UP){
-    hp_distance = float(0.015 * JOYSTICK_SPEED_MULTIPLIER);
-  }
-  if (controller_wiimote.button == WII_RIGHT || controller_wiimote.button == WII_RIGHT+WII_DOWN || controller_wiimote.button == WII_RIGHT+WII_UP){
-    hp_distance = float(-0.015 * JOYSTICK_SPEED_MULTIPLIER);
-  }
-  if (controller_wiimote.button == WII_DOWN || controller_wiimote.button == WII_LEFT+WII_DOWN || controller_wiimote.button == WII_RIGHT+WII_DOWN){
-    turn_rad = float(-0.0001 * JOYSTICK_SPEED_MULTIPLIER);
-  }
-  if (controller_wiimote.button == WII_UP || controller_wiimote.button == WII_LEFT+WII_UP || controller_wiimote.button == WII_RIGHT+WII_UP){
-    turn_rad = float(0.0001 * JOYSTICK_SPEED_MULTIPLIER);
-  }
-  if (controller_wiimote.button == WII_LEFT+WII_B){
-    z_distance = float (0.015 * JOYSTICK_SPEED_MULTIPLIER);
-  }
-  if (controller_wiimote.button == WII_RIGHT+WII_B){
-    z_distance = float (-0.015 * JOYSTICK_SPEED_MULTIPLIER);
-  }
-  if (controller_wiimote.button == WII_DOWN+WII_B){
-    e_distance = float (-0.008 * JOYSTICK_SPEED_MULTIPLIER);
-  }
-  if (controller_wiimote.button == WII_UP+WII_B){
-    e_distance = float (0.008 * JOYSTICK_SPEED_MULTIPLIER);
-  }
-  if (abs(hp_distance) > 0.0){
-    float hp_ratio = hp_distance / geometry.getHypot();
-    x_distance += interpolator.getXPosmm() * hp_ratio;
-    y_distance += interpolator.getYPosmm() * hp_ratio;    
-  }
-  if (abs(turn_rad) > 0.0){
-    x_distance += sin(geometry.getRotRad() + turn_rad) * geometry.getHypot() - interpolator.getXPosmm();
-    y_distance += cos(geometry.getRotRad() + turn_rad) * geometry.getHypot() - interpolator.getYPosmm();    
-  }
-
-  if (x_distance || y_distance || z_distance || e_distance){
-    interpolator.speed_profile = 0;
-    interpolator.setInterpolation(interpolator.getXPosmm()+x_distance, interpolator.getYPosmm()+y_distance, interpolator.getZPosmm()+z_distance, interpolator.getEPosmm()+e_distance, 5);
-    //SOLUTION FOR WIIMOTE Y<0.05 FREEZE ISSUE
-    if (interpolator.getYPosmm() < 0.5) {
-      interpolator.setInterpolation(interpolator.getXPosmm(), 0.5, interpolator.getZPosmm(), interpolator.getEPosmm(), 5);
+void emulateSerialCommand(float y, float z, float f = 0) {
+  String cmd = commandFormatter(y, z, f);
+  if (!queue.isFull()) {
+    if (command.processMessage(cmd)) {
+      queue.push(command.getCmd());
     }
   }
 }
-#endif
