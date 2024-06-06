@@ -62,14 +62,12 @@ void RampsStepper::stepRelativeRad(float rad) {
 }
 
 void RampsStepper::update() {   
-  while (stepperStepTargetPosition < stepperStepPosition) {  
+  if (stepperStepTargetPosition < stepperStepPosition) {  
     digitalWrite(dirPin, !inverse);
     digitalWrite(stepPin, HIGH);
     digitalWrite(stepPin, LOW);
     stepperStepPosition--;
-  }
-  
-  while (stepperStepTargetPosition > stepperStepPosition) {    
+  } else if (stepperStepTargetPosition > stepperStepPosition) {    
     digitalWrite(dirPin, inverse);
     digitalWrite(stepPin, HIGH);
     digitalWrite(stepPin, LOW);
