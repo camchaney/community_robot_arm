@@ -96,10 +96,10 @@ Command command;
 
 // TESTING
 bool speed_test = false;
-bool go_home = true;
+bool go_home = false;
 const int speed_loops = 5;
 int loopIteration = 0;
-float speeds[speed_loops] = {480,490,500,510,520};
+float speeds[speed_loops] = {700,800,900,1000,1100};
 String speedCommand;
 
 //PS4 CONTROLLER OBJECT FOR ESP32
@@ -165,6 +165,28 @@ void loop() {
   #endif
   fan.update();
 
+  // Do speed test
+  if (speed_test) {
+    if (interpolator.isFinished()) {
+      if (loopIteration < speed_loops) {
+        if (!go_home) {
+          emulateSerialCommand(280,0,speeds[loopIteration]);
+          loopIteration++;
+          go_home = true;
+        } else {
+          emulateSerialCommand(INITIAL_Y,INITIAL_Z);
+          go_home = false;
+        }        
+      } else {
+        emulateSerialCommand(INITIAL_Y,INITIAL_Z);
+        Logger::logINFO("SPEED TEST COMPLETE");
+        go_home = false;
+        speed_test = false;
+      }
+    }
+
+  }
+
   // Handle serial input commands
   if (!queue.isFull()) {
     if (command.handleGcode()) {
@@ -173,31 +195,10 @@ void loop() {
   }
   // Once position has been reached...
   if ((!queue.isEmpty()) && interpolator.isFinished()) {
-    executeCommand(queue.pop());
-    if (speed_test) {
-      if (go_home) {
-        // First go back to initial position
-        emulateSerialCommand(INITIAL_Y,INITIAL_Z);
-        go_home = false;
-      } else {
-        // Then do next loopIteration iteration
-        loopIteration++;
-        speed_test = true;
-        go_home = true;
-      }
-    }
+    // If there is a command in the queue and the last command has finished...
+    executeCommand(queue.pop());      // execute command
     if (PRINT_REPLY) {
       Serial.println(PRINT_REPLY_MSG);
-    }
-  }
-
-  // Do speed test
-  if (speed_test) {
-    if (loopIteration < speed_loops){
-      // speedCommand = "G0Y280Z0F"+speeds[loopIteration]+"\r";
-      emulateSerialCommand(280,0,speeds[loopIteration]);
-    } else {
-      speed_test = false;
     }
   }
 }
@@ -213,13 +214,12 @@ void executeCommand(Cmd cmd) {
     switch (cmd.num) {
     case 0:
     case 1:
-      Serial.println("G1 command now.");
       fan.enable(true);
       Point posoffset;
       posoffset = interpolator.getPosOffset();      
       cmdMove(cmd, interpolator.getPosmm(), posoffset, command.isRelativeCoord);
       interpolator.setInterpolation(cmd.valueX, cmd.valueY, cmd.valueZ, cmd.valueE, cmd.valueF);
-      Logger::logINFO("LINEAR MOVE: [X:" + String(cmd.valueX-posoffset.xmm) + " Y:" + String(cmd.valueY-posoffset.ymm) + " Z:" + String(cmd.valueZ-posoffset.zmm) + " E:" + String(cmd.valueE-posoffset.emm)+"]");
+      Logger::logINFO("LINEAR MOVE: [X:" + String(cmd.valueX-posoffset.xmm) + " Y:" + String(cmd.valueY-posoffset.ymm) + " Z:" + String(cmd.valueZ-posoffset.zmm) + " F:" + String(cmd.valueF)+"]");
       break;
     case 4: cmdDwell(cmd); break;
     case 28: 
